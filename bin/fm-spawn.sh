@@ -107,22 +107,25 @@ fi
 # (busy signature, exit command, dialogs, quirks) lives in AGENTS.md section 4.
 launch_template() {
   local harness=$1 kind=${2:-ship}
-  # shellcheck disable=SC2016  # single quotes are deliberate: $(cat ...) expands in the crewmate pane, not here
+  # shellcheck disable=SC2016  # single quotes are deliberate: $(< ...) expands in the crewmate pane, not here
+  # $(< file) is a bash builtin — unlike $(cat file) it survives treehouse
+  # subshells with a broken PATH (Git Bash), where cat is not found and the
+  # crewmate would otherwise launch with an empty brief, silently.
   case "$harness" in
-    claude) printf '%s' 'claude --dangerously-skip-permissions "$(cat __BRIEF__)"' ;;
+    claude) printf '%s' 'claude --dangerously-skip-permissions "$(< __BRIEF__)"' ;;
     codex)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'codex --dangerously-bypass-approvals-and-sandbox "$(cat __BRIEF__)"'
+        printf '%s' 'codex --dangerously-bypass-approvals-and-sandbox "$(< __BRIEF__)"'
       else
-        printf '%s' 'codex --dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __BRIEF__)"'
+        printf '%s' 'codex --dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(< __BRIEF__)"'
       fi
       ;;
-    opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode --prompt "$(cat __BRIEF__)"' ;;
+    opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode --prompt "$(< __BRIEF__)"' ;;
     pi)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'pi "$(cat __BRIEF__)"'
+        printf '%s' 'pi "$(< __BRIEF__)"'
       else
-        printf '%s' 'pi -e __PIEXT__ "$(cat __BRIEF__)"'
+        printf '%s' 'pi -e __PIEXT__ "$(< __BRIEF__)"'
       fi
       ;;
     *) return 1 ;;
@@ -323,11 +326,17 @@ if [ "$KIND" != secondmate ]; then
   tmux send-keys -t "$T" 'treehouse get' Enter
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
+  # tmux may report pane_current_path in Windows (C:\...) form while PROJ_ABS is in
+  # unix (/c/...) form; normalize before comparing so we don't false-trigger on format
+  # alone (which would mis-set WT to the project dir and pollute it).
   for _ in $(seq 1 60); do
     p=$(tmux display-message -p -t "$T" '#{pane_current_path}' 2>/dev/null || true)
-    if [ -n "$p" ] && [ "$p" != "$PROJ_ABS" ]; then
-      WT="$p"
-      break
+    if [ -n "$p" ]; then
+      pu=$(cygpath -u "$p" 2>/dev/null || printf '%s' "$p")
+      if [ "$pu" != "$PROJ_ABS" ]; then
+        WT="$pu"
+        break
+      fi
     fi
     sleep 1
   done
