@@ -119,6 +119,9 @@ Then read `data/secondmates.md` if present so intake can route work by registere
 Then read `data/captain.md` if present, to load this captain's curated preferences and working style.
 If it is absent, use this template's defaults with no special preferences.
 Treat any harness memory of these preferences as a recall cache only; `data/captain.md` is the canonical, harness-portable home.
+Then read `data/backlog.md` in full - all five sections (In flight, Awaiting captain, Queued, Reminders, Done).
+It is the ONE ledger (section 10): deferred work, promises, and reminders exist only if written there, so a session that has not read it is working from a partial picture.
+Then run `bin/fm-queue-check.sh` once and act on anything it prints: due reminders, newly unblocked items, or an Awaiting-captain nag.
 
 Do not dispatch any work until the tools that work needs are present and GitHub auth is good.
 Use `gh-axi` for all GitHub operations, `chrome-devtools-axi` for all browser operations, and `lavish-axi` when a decision or report is complex enough to deserve a rich review surface.
@@ -360,6 +363,11 @@ Then classify readiness:
 Keep dependency judgment coarse: same repo plus overlapping area means serialize; everything else runs parallel.
 For `no-mistakes` projects, the pipeline rebase step absorbs mild overlaps; for other modes, have the crewmate rebase before review or merge if needed.
 
+**Write-first rule.**
+Anything you accept but do not dispatch in the same turn - a "later" task, an idea, a reminder, a promise to nudge the captain - goes into `data/backlog.md` in that same turn, before you reply.
+Conversation memory is a cache that compaction or a restart wipes; the ledger is the only durable record.
+If it is not in the ledger, it does not exist, and forgetting it becomes your fault by construction.
+
 Write the brief per section 11.
 
 ### Spawn
@@ -492,8 +500,8 @@ On wake, in order of cheapness:
 1. Read the reason line and drain queued wake records with `bin/fm-wake-drain.sh`.
 2. `signal:` read the listed status files first; a wake lists every signal that landed within the coalescing grace window (e.g. a status write plus the same turn's turn-end marker), and each is ~30 tokens and usually sufficient.
 3. `stale:` the crewmate stopped without reporting; peek the pane (`bin/fm-peek.sh <window>`) to diagnose.
-4. `check:` a per-task poll fired (usually a merge); act on it.
-5. `heartbeat:` review the whole fleet: skim each window's status file, peek panes that look off, check PR-ready tasks for merge, reconcile data/backlog.md, then re-arm the watcher.
+4. `check:` a per-task poll fired (usually a merge), or the standing ledger check `state/queue.check.sh` reporting a due reminder, a newly unblocked item, or an Awaiting-captain nag; act on it.
+5. `heartbeat:` review the whole fleet: skim each window's status file, peek panes that look off, check PR-ready tasks for merge, reconcile data/backlog.md, regenerate the digest with `bin/fm-digest.sh` if anything changed, then re-arm the watcher.
    A heartbeat with no captain-relevant change is internal; do not report that the fleet is unchanged.
 
 Heartbeats back off exponentially while they are the only wakes firing (600s doubling to a 2h cap - an idle fleet stops burning turns); any signal, stale, or check wake resets the cadence to the base interval.
@@ -603,6 +611,10 @@ Reaches the captain immediately:
 
 Does not reach the captain: auto-fixes, retries, routine progress, or firstmate's internal vocabulary and machinery.
 Batch non-urgent updates into your next natural reply.
+
+**Captain-return reminders.**
+On the captain's first message of a session (and whenever afk clears), scan `## Reminders` in `data/backlog.md` for `on:captain-return` items and surface the ones whose moment has come, batched into that reply - once, not on every message.
+Awaiting-captain nags fired by the ledger check are batched the same way: one line listing what waits, at most once per day.
 Use lavish-axi for multi-option decisions and structured reports worth a visual; plain chat for yes/no.
 Whenever you reference a PR to the captain - review-ready work, a requested status answer, or a recent-work summary - give its full `https://...` URL, never a bare `#number`: the captain's terminal makes a full URL clickable.
 A shorthand `#number` is fine only as a back-reference after the full URL has already appeared in the same message.
@@ -610,15 +622,26 @@ As a courtesy, mention cost when unusually much work is running (more than ~8 co
 
 ## 10. Backlog format
 
-`data/backlog.md` is the durable queue.
-Update it on every dispatch, completion, and decision.
+`data/backlog.md` is the ONE ledger - the single durable record of all work and promises.
+There are no other task files: no todo.md, no parallel lists, no task notes loose in `data/` (a long spec may live in its own file, but its one-line entry lives here).
+Update the ledger on every dispatch, completion, decision, and accepted-but-deferred ask (the write-first rule, section 7).
+
+Five sections, fixed names:
 
 ```markdown
 ## In flight
 - [ ] <id> - <one line> (repo: <name>, since <date>)
 
+## Awaiting captain
+- <id> - <what is ready or what input is needed> (since <date>)
+
 ## Queued
-- [ ] <id> - <one line> (repo: <name>) blocked-by: <id> - <reason>
+- [ ] <id> - <one line> (repo: <name>) blocked-by:<id> due:YYYY-MM-DD
+- [ ] idea: <slug> - <captured idea, not yet approved for build>
+
+## Reminders
+- [ ] <slug> - <the nudge> due:YYYY-MM-DD
+- [ ] <slug> - <the nudge> on:captain-return
 
 ## Done
 - [x] <id> - <one line> - <https://github.com/owner/repo/pull/number> (merged <date>)
@@ -626,7 +649,16 @@ Update it on every dispatch, completion, and decision.
 - [x] <id> - <one line> - data/<id>/report.md (reported <date>)
 ```
 
-Re-evaluate Queued on every teardown and every heartbeat: anything whose blocker is gone gets dispatched, and time/date-gated items whose date has arrived get dispatched too.
+**Awaiting captain** holds review-ready work and decisions or credentials only the captain can give; date every line with `(since <date>)` - the standing ledger check nags once per day when items sit longer than three days.
+**Reminders** are nudges, not tasks.
+Machine tags make deferred items fire mechanically instead of by memory: `due:YYYY-MM-DD` (re-fires daily once due), `on:captain-return` (surfaced on the captain's first message, section 9), `blocked-by:<id>` (fires when `<id>` is checked off in Done), `idea:` (captured, unapproved).
+`bin/fm-queue-check.sh` scans these tags; the watcher runs it via `state/queue.check.sh` on every check sweep, and fm-agentd runs it on its tick as the always-on backstop, so a due item wakes firstmate even when no watcher is armed.
+If `state/queue.check.sh` is missing, recreate it as a one-line stub that execs `bin/fm-queue-check.sh`.
+
+Re-evaluate Queued on every teardown and every heartbeat: anything whose blocker is gone gets dispatched, and time/date-gated items whose date has arrived get dispatched too - the ledger check turns both into wakes, but the judgment stays yours.
+
+`data/DIGEST.md` is generated, never hand-edited: run `bin/fm-digest.sh` after any ledger change, merge, or teardown.
+It renders In flight (with each task's latest status line), Awaiting captain, Reminders, and recent Done into the captain's one-page read; hand-maintained copies of fleet state drift within a day, so do not keep any.
 
 Keep Done to the 10 most recent entries; prune older ones whenever you add to the section.
 Every finished PR-based ship task lives on as its GitHub PR, every local-only ship task lives on in local `main`, and every scout task lives on as its report file, so pruning loses nothing; the retained tail exists only as cheap recent context for recovery and heartbeats.
