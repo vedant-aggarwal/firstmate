@@ -330,8 +330,9 @@ test_lock_late_claim_loses_after_recreate() {
   lockdir="$state/.contend.lock"
   out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
+    fm_lock_symlinks_supported || { printf "skip=nosymlink\n"; exit 0; }
     owner1=$(fm_lock_owner_dir "$2") || exit 20
-    ln -s "$owner1" "$2" || exit 21
+    fm_lock_ln_s "$owner1" "$2" || exit 21
     touch -h -t 200001010000 "$2" 2>/dev/null || sleep 2
     if ! fm_lock_try_acquire "$2"; then exit 22; fi
     before=$(cat "$2/pid" 2>/dev/null || true)
@@ -340,6 +341,11 @@ test_lock_late_claim_loses_after_recreate() {
     current_owner=$(readlink "$2" 2>/dev/null || true)
     printf "late=%s before=%s after=%s owner_changed=%s\n" "$late" "$before" "$after" "$([ "$current_owner" != "$owner1" ] && echo yes || echo no)"
   ' _ "$LIB" "$lockdir")
+  case "$out" in
+    *"skip=nosymlink"*)
+      pass "late original claimant cannot claim a recreated lock (skipped: no symlink support)"
+      return ;;
+  esac
   case "$out" in
     *"late=lost"*) ;;
     *) fail "late original claimant succeeded after lock recreation: $out" ;;
@@ -362,8 +368,9 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
   lockdir="$state/.contend.lock"
   out=$(FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" bash -c '
     . "$1"
+    fm_lock_symlinks_supported || { printf "skip=nosymlink\n"; exit 0; }
     owner=$(fm_lock_owner_dir "$2") || exit 20
-    ln -s "$owner" "$2" || exit 21
+    fm_lock_ln_s "$owner" "$2" || exit 21
     fm_lock_try_acquire "$2.steal" || exit 22
     steal_owner=${FM_LOCK_OWNER_DIR:-}
     if fm_lock_claim "$2" "$owner"; then late=won; else late=lost; fi
@@ -371,6 +378,11 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
     pid=$(cat "$2/pid" 2>/dev/null || true)
     printf "late=%s stealer=%s pid=%s\n" "$late" "$stealer" "$pid"
   ' _ "$LIB" "$lockdir")
+  case "$out" in
+    *"skip=nosymlink"*)
+      pass "paused mid-acquire claim fails during steal (skipped: no symlink support)"
+      return ;;
+  esac
   case "$out" in
     *"late=lost"*) ;;
     *) fail "paused claimant succeeded while steal mutex was held: $out" ;;
@@ -427,7 +439,11 @@ test_watch_restart_reports_healthy_peer_without_attaching() {
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
-  node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
+  # The peer must ignore SIGTERM, so it has to be a process this shell can
+  # actually signal. On Cygwin a native Windows process (e.g. node) cannot be
+  # sent a POSIX signal at all: kill(1) terminates it outright, whatever handler
+  # it installed. A trapping shell is signal-deliverable on every platform.
+  bash -c 'trap "" TERM; sleep 300' &
   peer=$!
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"

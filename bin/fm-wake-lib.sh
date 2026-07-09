@@ -11,6 +11,9 @@ FM_WAKE_QUEUE_LOCK="${FM_WAKE_QUEUE_LOCK:-$STATE/.wake-queue.lock}"
 FM_LOCK_STALE_AFTER="${FM_LOCK_STALE_AFTER:-2}"
 mkdir -p "$STATE"
 
+# shellcheck source=bin/fm-proc-lib.sh
+. "$FM_WAKE_LIB_DIR/fm-proc-lib.sh"
+
 fm_current_pid() {
   printf '%s\n' "${BASHPID:-$$}"
 }
@@ -24,16 +27,7 @@ fm_pid_alive() {
 }
 
 fm_pid_identity() {
-  local pid=$1 out
-  case "$pid" in
-    ''|*[!0-9]*) return 1 ;;
-  esac
-  # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
-  # written under one locale but re-read under the machine's ambient locale, which
-  # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
-  out=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
-  [ -n "$out" ] || return 1
-  printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
+  fm_proc_identity "$1"
 }
 
 fm_path_mtime() {
@@ -123,8 +117,68 @@ fm_lock_link_owner() {
 
 fm_lock_points_to_owner() {
   local lockdir=$1 ownerdir=$2 actual
-  actual=$(readlink "$lockdir" 2>/dev/null) || return 1
-  [ "$actual" = "$ownerdir" ]
+  if [ -L "$lockdir" ]; then
+    actual=$(readlink "$lockdir" 2>/dev/null) || return 1
+    [ "$actual" = "$ownerdir" ]
+    return
+  fi
+  # Plain-directory lock: no owner indirection exists, so the lock dir owns itself.
+  # An owner dir is always "<lockdir>.owner.XXXXXX", so this can never accept a
+  # stray copied directory left where a symlink was meant to be.
+  [ -d "$lockdir" ] && [ "$lockdir" = "$ownerdir" ]
+}
+
+# Git Bash's `ln -s` silently COPIES a directory instead of linking to it unless
+# winsymlinks is enabled, and a copy makes the lock protocol below self-colliding:
+# the copied dir carries the acquirer's own pid, which the acquirer then reads
+# back and mistakes for a live peer holding the lock. Ask for a native symlink,
+# then verify we actually got one; never leave a copy behind.
+FM_LOCK_SYMLINKS=
+fm_lock_ln_s() {
+  local target=$1 link=$2
+  MSYS="${MSYS:+$MSYS }winsymlinks:nativestrict" \
+  CYGWIN="${CYGWIN:+$CYGWIN }winsymlinks:nativestrict" \
+    ln -s "$target" "$link" 2>/dev/null || return 1
+  [ -L "$link" ] && return 0
+  rm -rf "$link" 2>/dev/null || true
+  return 1
+}
+
+# True when this filesystem and shell can create real symlinks. Probed once:
+# the answer cannot change within a process, and every lock acquisition asks.
+# Windows without Developer Mode (or admin) answers false, and the lock falls
+# back to a plain mkdir directory, which is atomic on Windows too.
+fm_lock_symlinks_supported() {
+  local probe
+  if [ -z "$FM_LOCK_SYMLINKS" ]; then
+    FM_LOCK_SYMLINKS=0
+    if probe=$(mktemp -d "$STATE/.lock-symlink-probe.XXXXXX" 2>/dev/null) && [ -n "$probe" ]; then
+      if mkdir "$probe/target" 2>/dev/null && fm_lock_ln_s "$probe/target" "$probe/link"; then
+        FM_LOCK_SYMLINKS=1
+      fi
+      rm -rf "$probe" 2>/dev/null || true
+    fi
+  fi
+  [ "$FM_LOCK_SYMLINKS" = 1 ]
+}
+
+# Plain mkdir lock, used when symlinks are unavailable. mkdir is atomic, so at
+# most one acquirer wins. The window between winning the mkdir and writing the
+# pid is covered by fm_lock_mid_acquire_is_fresh, which reads a pid-less lock
+# younger than FM_LOCK_STALE_AFTER as held rather than stealable.
+fm_lock_try_create_plain() {
+  local lockdir=$1 allowed_steal_owner=${2:-}
+  mkdir "$lockdir" 2>/dev/null || return 1
+  if ! fm_lock_prepare_owner "$lockdir"; then
+    fm_lock_remove_path "$lockdir" || true
+    return 1
+  fi
+  if fm_lock_claim_blocked_by_steal "$lockdir" "$allowed_steal_owner"; then
+    fm_lock_remove_path "$lockdir" || true
+    return 1
+  fi
+  FM_LOCK_OWNER_DIR=$lockdir
+  return 0
 }
 
 fm_lock_discard_owner() {
@@ -181,6 +235,10 @@ fm_lock_claim() {
 fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir
   FM_LOCK_OWNER_DIR=
+  if ! fm_lock_symlinks_supported; then
+    fm_lock_try_create_plain "$lockdir" "$allowed_steal_owner"
+    return
+  fi
   ownerdir=$(fm_lock_owner_dir "$lockdir") || return 1
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_discard_owner "$ownerdir"
@@ -190,7 +248,7 @@ fm_lock_try_create() {
     fm_lock_discard_owner "$ownerdir"
     return 1
   fi
-  if ln -s "$ownerdir" "$lockdir" 2>/dev/null && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
+  if fm_lock_ln_s "$ownerdir" "$lockdir" && fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
     if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner"; then
       FM_LOCK_OWNER_DIR=$ownerdir
       return 0

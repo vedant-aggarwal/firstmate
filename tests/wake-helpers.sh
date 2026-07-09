@@ -7,6 +7,9 @@
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# shellcheck source=bin/fm-proc-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../bin/fm-proc-lib.sh"
+
 # fm-wake-drain.sh now calls fm-guard.sh to assert watcher liveness on every
 # drain. fm-guard.sh's first check warns when the firstmate PRIMARY checkout
 # (FM_ROOT) sits on a feature branch; with no override FM_ROOT resolves to the
@@ -259,7 +262,7 @@ wait_for_exit() {
 is_live_non_zombie() {
   local pid=$1 stat
   kill -0 "$pid" 2>/dev/null || return 1
-  stat=$(ps -p "$pid" -o stat= 2>/dev/null || true)
+  stat=$(fm_proc_state "$pid" 2>/dev/null || true)
   case "$stat" in
     Z*) return 1 ;;
   esac
