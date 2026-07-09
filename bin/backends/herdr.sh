@@ -547,6 +547,28 @@ EOF
       return 1
     fi
   fi
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # herdr-win panes open the server's default shell (PowerShell unless
+      # HERDR_SHELL overrides it), but firstmate's launch templates and the
+      # treehouse subshell handoff assume a POSIX shell. Drop ONLY firstmate
+      # task panes into Git Bash so the captain's own panes keep their shell.
+      # Two verified sharp edges (2026-07-10, herdr 0.7.0-preview):
+      # - a bare `bash` from PowerShell resolves to the System32 WSL stub, so
+      #   the full Git Bash path is required;
+      # - treehouse's subshell follows $SHELL and falls back to ComSpec (cmd)
+      #   when unset, and a non-login Git Bash does not set SHELL itself, so
+      #   export it explicitly or `treehouse get` drops the pane into cmd.
+      local gitbash_w gitbash_u
+      gitbash_u=$(command -v bash 2>/dev/null) || gitbash_u=/usr/bin/bash
+      gitbash_w=$(cygpath -w "$gitbash_u" 2>/dev/null) || gitbash_w='C:\Program Files\Git\usr\bin\bash.exe'
+      sleep 1
+      fm_backend_herdr_cli "$session" pane run "$pane_id" "& '$gitbash_w'" >/dev/null 2>&1 || true
+      sleep 2
+      fm_backend_herdr_cli "$session" pane run "$pane_id" "export SHELL=$gitbash_u" >/dev/null 2>&1 || true
+      sleep 1
+      ;;
+  esac
   printf '%s %s' "$tab_id" "$pane_id"
 }
 
@@ -579,8 +601,30 @@ fm_backend_herdr_target_ready() {  # <target>
 # worktree subshell - confirmed live against a real treehouse acquisition.
 fm_backend_herdr_current_path() {  # <target>
   fm_backend_herdr_target_ready "$1" || return 0
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
-    | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
+  local fg
+  fg=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane get "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
+    | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null)
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # herdr-win's foreground_cwd tracks only the pane's ROOT process cwd;
+      # nested shells (bash, treehouse's subshell) never move it, so the
+      # worktree-discovery poll would wait forever. Fall back to the
+      # worktree-entry marker treehouse prints in the pane text. Panes are
+      # fresh per task (tab-per-task), so the LAST marker is this task's.
+      local cap wt
+      cap=$(fm_backend_herdr_capture "$1" 200 2>/dev/null) || cap=
+      wt=$(printf '%s\n' "$cap" | sed -n "s/.*Entered worktree at \(.*\)\. Type 'exit' to return.*/\1/p" | tail -1)
+      if [ -n "$wt" ]; then
+        wt=${wt/#\~/$HOME}
+        wt=${wt//\\//}
+        if [ -d "$wt" ]; then
+          printf '%s\n' "$wt"
+          return 0
+        fi
+      fi
+      ;;
+  esac
+  printf '%s\n' "$fg"
 }
 
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,
