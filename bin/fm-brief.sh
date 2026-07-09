@@ -6,10 +6,14 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> [--scout|--loop] [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
+#   --loop writes the loop contract: a persistent improve-forever task that works
+#   in cycles on branch fm/<task-id>, with WORKLOG.md / SIGNALS.md /
+#   FEATURE-REQUESTS.md in data/<task-id>/ as the durable memory. Loops never
+#   push; the captain steers via SIGNALS.md and reviews via WORKLOG.md.
 #   --secondmate writes a persistent secondmate charter. The project list
 #   is cloned into the secondmate home, while the natural-language scope
 #   tells the main firstmate when to route work there; routine churn stays in its own home;
@@ -77,6 +81,7 @@ POS=()
 for a in "$@"; do
   case "$a" in
     --scout) KIND=scout ;;
+    --loop) KIND=loop ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
@@ -262,6 +267,52 @@ When the report is complete, append \`done: {one-line conclusion}\` to the statu
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
 echo "scaffolded: $BRIEF (scout; replace {TASK})"
+exit 0
+fi
+
+if [ "$KIND" = loop ]; then
+cat > "$BRIEF" <<EOF
+You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+
+# Task
+{TASK}
+
+# Setup
+You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
+This is a LOOP task: a persistent improve-forever assignment worked in cycles, not a one-shot ship.
+1. First action: create your branch: \`git checkout -b fm/$ID\`
+2. Create your contract files if missing: \`$DATA/$ID/WORKLOG.md\` (cycle journal),
+   \`$DATA/$ID/SIGNALS.md\` (captain steering - you READ this), \`$DATA/$ID/FEATURE-REQUESTS.md\` (your proposals - you WRITE this).
+
+# Cycle contract
+Each cycle: read SIGNALS.md first (new captain notes override your queue) ->
+pick the highest-value item -> implement -> verify (typecheck/lint/tests/build;
+UI work needs desktop+mobile screenshots) -> commit on fm/$ID -> append a dated
+entry to WORKLOG.md -> append one status line. Never two cycles without a
+status line and a WORKLOG entry. The files are your durable memory: you must be
+resumable in a fresh session from brief + WORKLOG alone.
+
+# Rules
+1. Never push to any remote and never open a PR. Work only on fm/$ID; firstmate handles merges.
+2. Stay inside this worktree; the only files you may write outside it are your data/$ID contract files and the status file below.
+3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+4. Report status by appending one line:
+   \`echo "{state}: {one short line}" >> $STATUS_FILE\`
+   States: working, needs-decision, blocked, done, failed.
+   One line per cycle at most; milestones and needs-decision/blocked only.
+5. If the harness reports a usage/rate limit with a reset time, append
+   \`blocked: rate-limit until {time}\` and STOP - do not burn retries against a known reset.
+6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+7. If a decision belongs to a human (product choices, destructive actions),
+   write it to FEATURE-REQUESTS.md or append \`needs-decision: {summary}\` and continue with other queue items if any.
+
+# Definition of done
+Loops do not finish; they rest. When your backlog is exhausted, append
+\`done: backlog exhausted, review-ready in branch fm/$ID\` and stop - firstmate
+reviews WORKLOG + diff, the captain steers via SIGNALS.md, and you may be
+resumed or respawned fresh from the files. If SIGNALS.md says stop, stop.
+EOF
+echo "scaffolded: $BRIEF (loop; replace {TASK})"
 exit 0
 fi
 
