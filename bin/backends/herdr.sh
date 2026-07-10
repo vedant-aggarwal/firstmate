@@ -611,8 +611,12 @@ fm_backend_herdr_current_path() {  # <target>
       # worktree-discovery poll would wait forever. Fall back to the
       # worktree-entry marker treehouse prints in the pane text. Panes are
       # fresh per task (tab-per-task), so the LAST marker is this task's.
+      # The read must be --source recent-unwrapped: on a narrow pane the
+      # renderer wraps the marker mid-path, splitting it across lines, and
+      # the per-line scrape below never matches (observed at ~55 cols).
       local cap wt
-      cap=$(fm_backend_herdr_capture "$1" 200 2>/dev/null) || cap=
+      cap=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane read "$FM_BACKEND_HERDR_PANE" --source recent-unwrapped --lines 200 2>/dev/null) || cap=
+      [ -n "$cap" ] || cap=$(fm_backend_herdr_capture "$1" 200 2>/dev/null) || cap=
       wt=$(printf '%s\n' "$cap" | sed -n "s/.*Entered worktree at \(.*\)\. Type 'exit' to return.*/\1/p" | tail -1)
       if [ -n "$wt" ]; then
         wt=${wt/#\~/$HOME}
